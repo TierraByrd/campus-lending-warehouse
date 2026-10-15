@@ -1,0 +1,207 @@
+
+-- Check 1: Columnar reading (column pruning)
+-- The query only needs item_key from fact_loans. Look at the SEQ_SCAN on fact_loans:
+-- its projections should list only item_key, not all 8 columns.
+EXPLAIN
+SELECT i.item_category, COUNT(*) AS total_loans
+FROM fact_loans f
+JOIN dim_item i ON f.item_key = i.item_key
+GROUP BY i.item_category;
+
+┌─────────────────────────────┐
+│┌───────────────────────────┐│
+││       Physical Plan       ││
+│└───────────────────────────┘│
+└─────────────────────────────┘
+┌───────────────────────────┐
+│         PROJECTION        │
+│    ────────────────────   │
+│__internal_decompress_strin│
+│           g(#0)           │
+│             #1            │
+│                           │
+│          ~7 rows          │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       HASH_GROUP_BY       │
+│    ────────────────────   │
+│         Groups: #0        │
+│                           │
+│        Aggregates:        │
+│        count_star()       │
+│                           │
+│          ~7 rows          │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│         PROJECTION        │
+│    ────────────────────   │
+│       item_category       │
+│                           │
+│          ~28 rows         │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│         PROJECTION        │
+│    ────────────────────   │
+│__internal_compress_integra│
+│     l_utinyint(#0, 1)     │
+│__internal_compress_string_│
+│        uhugeint(#1)       │
+│                           │
+│          ~28 rows         │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│         HASH_JOIN         │
+│    ────────────────────   │
+│      Join Type: INNER     │
+│                           │
+│        Conditions:        ├──────────────┐
+│    item_key = item_key    │              │
+│                           │              │
+│          ~28 rows         │              │
+└─────────────┬─────────────┘              │
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│          SEQ_SCAN         ││          SEQ_SCAN         │
+│    ────────────────────   ││    ────────────────────   │
+│           Table:          ││           Table:          │
+│   lending_warehouse.main  ││   lending_warehouse.main  │
+│        .fact_loans        ││         .dim_item         │
+│                           ││                           │
+│   Type: Sequential Scan   ││   Type: Sequential Scan   │
+│   Projections: item_key   ││                           │
+│                           ││        Projections:       │
+│                           ││          item_key         │
+│                           ││       item_category       │
+│                           ││                           │
+│          ~32 rows         ││          ~8 rows          │
+└───────────────────────────┘└───────────────────────────┘
+
+-- Check 2: Filtering reduces the data scanned
+-- The semester filter should show up inside the dim_date scan, so other semesters
+-- are dropped before the join happens.
+EXPLAIN
+SELECT c.campus_name, COUNT(*) AS total_loans
+FROM fact_loans f
+JOIN dim_date d   ON f.date_key   = d.date_key
+JOIN dim_campus c ON f.campus_key = c.campus_key
+WHERE d.semester = 'Fall 2026'
+GROUP BY c.campus_name;
+
+┌─────────────────────────────┐
+│┌───────────────────────────┐│
+││       Physical Plan       ││
+│└───────────────────────────┘│
+└─────────────────────────────┘
+┌───────────────────────────┐
+│         PROJECTION        │
+│    ────────────────────   │
+│__internal_decompress_strin│
+│           g(#0)           │
+│             #1            │
+│                           │
+│          ~2 rows          │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       HASH_GROUP_BY       │
+│    ────────────────────   │
+│         Groups: #0        │
+│                           │
+│        Aggregates:        │
+│        count_star()       │
+│                           │
+│          ~2 rows          │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│         PROJECTION        │
+│    ────────────────────   │
+│        campus_name        │
+│                           │
+│          ~8 rows          │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│         PROJECTION        │
+│    ────────────────────   │
+│__internal_compress_integra│
+│     l_utinyint(#0, 1)     │
+│__internal_compress_integra│
+│ l_usmallint(#1, 20250908) │
+│__internal_compress_string_│
+│        uhugeint(#2)       │
+│                           │
+│          ~8 rows          │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│         HASH_JOIN         │
+│    ────────────────────   │
+│      Join Type: INNER     │
+│                           │
+│        Conditions:        ├───────────────────────────────────────────┐
+│  campus_key = campus_key  │                                           │
+│                           │                                           │
+│          ~8 rows          │                                           │
+└─────────────┬─────────────┘                                           │
+┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
+│         HASH_JOIN         │                             │          SEQ_SCAN         │
+│    ────────────────────   │                             │    ────────────────────   │
+│      Join Type: INNER     │                             │           Table:          │
+│                           │                             │   lending_warehouse.main  │
+│        Conditions:        │                             │        .dim_campus        │
+│    date_key = date_key    │                             │                           │
+│                           ├──────────────┐              │   Type: Sequential Scan   │
+│                           │              │              │                           │
+│                           │              │              │        Projections:       │
+│                           │              │              │         campus_key        │
+│                           │              │              │        campus_name        │
+│                           │              │              │                           │
+│          ~8 rows          │              │              │          ~3 rows          │
+└─────────────┬─────────────┘              │              └───────────────────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│          SEQ_SCAN         ││          SEQ_SCAN         │
+│    ────────────────────   ││    ────────────────────   │
+│           Table:          ││           Table:          │
+│   lending_warehouse.main  ││   lending_warehouse.main  │
+│        .fact_loans        ││         .dim_date         │
+│                           ││                           │
+│   Type: Sequential Scan   ││   Type: Sequential Scan   │
+│                           ││   Projections: date_key   │
+│        Projections:       ││                           │
+│          date_key         ││          Filters:         │
+│         campus_key        ││    semester='Fall 2026'   │
+│                           ││                           │
+│          ~32 rows         ││          ~7 rows          │
+└───────────────────────────┘└───────────────────────────┘
+
+-- Check 3: Pre-aggregation with a summary table
+-- DuckDB does not support materialized views, so CREATE TABLE AS SELECT stands in for one.
+-- The heavy join + group by runs once, and dashboards read the small result.
+CREATE OR REPLACE TABLE summary_loans_by_month AS
+SELECT d.year, d.month, d.month_name, i.item_category,
+       COUNT(*) AS total_loans,
+       ROUND(AVG(f.loan_duration_days), 1) AS avg_duration_days
+FROM fact_loans f
+JOIN dim_date d ON f.date_key = d.date_key
+JOIN dim_item i ON f.item_key = i.item_key
+GROUP BY d.year, d.month, d.month_name, i.item_category;
+
+-- A dashboard question answered from the summary table with no joins
+SELECT month_name, item_category, total_loans
+FROM summary_loans_by_month
+WHERE year = 2026 AND month = 9
+ORDER BY total_loans DESC, item_category;
+┌────────────┬───────────────┬─────────────┐
+│ month_name │ item_category │ total_loans │
+│  varchar   │    varchar    │    int64    │
+├────────────┼───────────────┼─────────────┤
+│ September  │ Laptop        │           4 │
+│ September  │ Audio         │           1 │
+│ September  │ Camera        │           1 │
+└────────────┴───────────────┴─────────────┘
+
+-- Size comparison: rows in the summary table vs. rows in the fact table
+SELECT (SELECT COUNT(*) FROM summary_loans_by_month) AS summary_rows,
+       (SELECT COUNT(*) FROM fact_loans)             AS fact_rows;
+┌──────────────┬───────────┐
+│ summary_rows │ fact_rows │
+│    int64     │   int64   │
+├──────────────┼───────────┤
+│           27 │        32 │
+└──────────────┴───────────┘
