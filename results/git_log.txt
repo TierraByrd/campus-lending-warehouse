@@ -1,0 +1,9 @@
+73ec7e9 Add README with model, run steps, and query summary
+497336a Add performance checks and warehouse performance reflection
+c547551 Add star schema diagram
+ab9ca6a Remove .DS_Store and ignore macOS system files
+0e3afb2 Add OLAP queries with saved output and screenshots
+f379c10 Add CSV load script with row count and key match checks
+e20cfc4 Add sample CSV data for fact and dimension tables
+18fdec4 Add star schema DDL for fact and dimension tables
+687c811 Add grain definition for fact_loans
