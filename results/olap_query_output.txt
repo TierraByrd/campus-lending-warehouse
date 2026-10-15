@@ -1,0 +1,188 @@
+
+-- Query 1: Total loans by month and item category
+-- OLAP behavior: aggregation (COUNT) sliced two ways at once, by time and by category.
+-- Year is included so September 2025 and September 2026 stay separate.
+SELECT d.year, d.month, d.month_name, i.item_category, COUNT(*) AS total_loans
+FROM fact_loans f
+JOIN dim_date d ON f.date_key = d.date_key
+JOIN dim_item i ON f.item_key = i.item_key
+GROUP BY d.year, d.month, d.month_name, i.item_category
+ORDER BY d.year, d.month, total_loans DESC, i.item_category;
+┌───────┬───────┬────────────┬───────────────┬─────────────┐
+│ year  │ month │ month_name │ item_category │ total_loans │
+│ int32 │ int32 │  varchar   │    varchar    │    int64    │
+├───────┼───────┼────────────┼───────────────┼─────────────┤
+│  2025 │     9 │ September  │ Laptop        │           2 │
+│  2025 │     9 │ September  │ Camera        │           1 │
+│  2025 │     9 │ September  │ Tablet        │           1 │
+│  2025 │    10 │ October    │ Audio         │           1 │
+│  2025 │    10 │ October    │ Laptop        │           1 │
+│  2025 │    11 │ November   │ Laptop        │           1 │
+│  2025 │    11 │ November   │ Projector     │           1 │
+│  2025 │    12 │ December   │ Camera        │           1 │
+│  2026 │     1 │ January    │ Laptop        │           2 │
+│  2026 │     1 │ January    │ Audio         │           1 │
+│  2026 │     2 │ February   │ Camera        │           1 │
+│  2026 │     2 │ February   │ Tablet        │           1 │
+│  2026 │     3 │ March      │ Audio         │           1 │
+│  2026 │     3 │ March      │ Laptop        │           1 │
+│  2026 │     3 │ March      │ Projector     │           1 │
+│  2026 │     4 │ April      │ Camera        │           1 │
+│  2026 │     4 │ April      │ Laptop        │           1 │
+│  2026 │     5 │ May        │ Laptop        │           1 │
+│  2026 │     6 │ June       │ Tablet        │           1 │
+│  2026 │     7 │ July       │ Camera        │           1 │
+│  2026 │     9 │ September  │ Laptop        │           4 │
+│  2026 │     9 │ September  │ Audio         │           1 │
+│  2026 │     9 │ September  │ Camera        │           1 │
+│  2026 │    10 │ October    │ Audio         │           1 │
+│  2026 │    10 │ October    │ Laptop        │           1 │
+│  2026 │    10 │ October    │ Projector     │           1 │
+│  2026 │    10 │ October    │ Tablet        │           1 │
+└───────┴───────┴────────────┴───────────────┴─────────────┘
+  27 rows                                        5 columns
+
+-- Query 2: Average loan duration by campus
+-- OLAP behavior: aggregation (AVG) grouped by the campus dimension.
+-- AVG skips NULL durations, so loans still out don't pull the average down.
+SELECT c.campus_name,
+       COUNT(f.loan_duration_days) AS returned_loans,
+       ROUND(AVG(f.loan_duration_days), 1) AS avg_duration_days
+FROM fact_loans f
+JOIN dim_campus c ON f.campus_key = c.campus_key
+GROUP BY c.campus_name
+ORDER BY avg_duration_days DESC;
+┌─────────────┬────────────────┬───────────────────┐
+│ campus_name │ returned_loans │ avg_duration_days │
+│   varchar   │     int64      │      double       │
+├─────────────┼────────────────┼───────────────────┤
+│ St. Paul    │             14 │               5.6 │
+│ Woodbury    │              6 │               5.3 │
+│ Minneapolis │              8 │               5.1 │
+└─────────────┴────────────────┴───────────────────┘
+
+-- Query 3: Top 3 item categories by annual usage
+-- OLAP behavior: aggregation per year, then ranking inside each year.
+-- RANK() restarts for each year, and QUALIFY keeps only the top 3 (ties share a rank).
+SELECT d.year, i.item_category, COUNT(*) AS total_loans,
+       RANK() OVER (PARTITION BY d.year ORDER BY COUNT(*) DESC) AS category_rank
+FROM fact_loans f
+JOIN dim_date d ON f.date_key = d.date_key
+JOIN dim_item i ON f.item_key = i.item_key
+GROUP BY d.year, i.item_category
+QUALIFY category_rank <= 3
+ORDER BY d.year, category_rank, i.item_category;
+┌───────┬───────────────┬─────────────┬───────────────┐
+│ year  │ item_category │ total_loans │ category_rank │
+│ int32 │    varchar    │    int64    │     int64     │
+├───────┼───────────────┼─────────────┼───────────────┤
+│  2025 │ Laptop        │           4 │             1 │
+│  2025 │ Camera        │           2 │             2 │
+│  2025 │ Audio         │           1 │             3 │
+│  2025 │ Projector     │           1 │             3 │
+│  2025 │ Tablet        │           1 │             3 │
+│  2026 │ Laptop        │          10 │             1 │
+│  2026 │ Audio         │           4 │             2 │
+│  2026 │ Camera        │           4 │             2 │
+└───────┴───────────────┴─────────────┴───────────────┘
+
+-- Query 4: Loans by semester and campus
+-- OLAP behavior: two-dimension slice (time x location).
+-- Sorted by year, then Spring, Summer, Fall, so semesters show in calendar order, not alphabetical.
+SELECT d.semester, c.campus_name, COUNT(*) AS total_loans
+FROM fact_loans f
+JOIN dim_date d   ON f.date_key   = d.date_key
+JOIN dim_campus c ON f.campus_key = c.campus_key
+GROUP BY d.semester, c.campus_name
+ORDER BY MIN(d.year),
+         CASE WHEN d.semester LIKE 'Spring%' THEN 1
+              WHEN d.semester LIKE 'Summer%' THEN 2
+              ELSE 3 END,
+         c.campus_name;
+┌─────────────┬─────────────┬─────────────┐
+│  semester   │ campus_name │ total_loans │
+│   varchar   │   varchar   │    int64    │
+├─────────────┼─────────────┼─────────────┤
+│ Fall 2025   │ Minneapolis │           2 │
+│ Fall 2025   │ St. Paul    │           5 │
+│ Fall 2025   │ Woodbury    │           2 │
+│ Spring 2026 │ Minneapolis │           4 │
+│ Spring 2026 │ St. Paul    │           5 │
+│ Spring 2026 │ Woodbury    │           2 │
+│ Summer 2026 │ St. Paul    │           1 │
+│ Summer 2026 │ Woodbury    │           1 │
+│ Fall 2026   │ Minneapolis │           3 │
+│ Fall 2026   │ St. Paul    │           5 │
+│ Fall 2026   │ Woodbury    │           2 │
+└─────────────┴─────────────┴─────────────┘
+  11 rows                       3 columns
+
+-- Query 5: Overdue vs. returned loans
+-- OLAP behavior: aggregation over the two flag measures in the fact table.
+-- No dimension joins needed since the flags live on the fact row.
+SELECT CASE
+         WHEN is_returned = 1 AND is_overdue = 0 THEN 'Returned on time'
+         WHEN is_returned = 1 AND is_overdue = 1 THEN 'Returned late'
+         WHEN is_returned = 0 AND is_overdue = 1 THEN 'Still out, overdue'
+         ELSE 'Still out, not due yet'
+       END AS loan_status,
+       COUNT(*) AS total_loans
+FROM fact_loans
+GROUP BY loan_status
+ORDER BY total_loans DESC;
+┌────────────────────────┬─────────────┐
+│      loan_status       │ total_loans │
+│        varchar         │    int64    │
+├────────────────────────┼─────────────┤
+│ Returned on time       │          23 │
+│ Returned late          │           5 │
+│ Still out, not due yet │           3 │
+│ Still out, overdue     │           1 │
+└────────────────────────┴─────────────┘
+
+-- Query 6: Drill-down into laptop loans for Fall 2026
+-- OLAP behavior: slice to one semester and one category, then drill down
+-- from category (Laptop) to the specific item type and campus.
+SELECT i.item_type, c.campus_name, COUNT(*) AS total_loans,
+       ROUND(AVG(f.loan_duration_days), 1) AS avg_duration_days
+FROM fact_loans f
+JOIN dim_date d   ON f.date_key   = d.date_key
+JOIN dim_item i   ON f.item_key   = i.item_key
+JOIN dim_campus c ON f.campus_key = c.campus_key
+WHERE d.semester = 'Fall 2026'
+  AND i.item_category = 'Laptop'
+GROUP BY i.item_type, c.campus_name
+ORDER BY total_loans DESC, i.item_type, c.campus_name;
+┌───────────────┬─────────────┬─────────────┬───────────────────┐
+│   item_type   │ campus_name │ total_loans │ avg_duration_days │
+│    varchar    │   varchar   │    int64    │      double       │
+├───────────────┼─────────────┼─────────────┼───────────────────┤
+│ MacBook Air   │ St. Paul    │           2 │               6.0 │
+│ Dell Latitude │ Minneapolis │           1 │               5.0 │
+│ Dell Latitude │ St. Paul    │           1 │               9.0 │
+│ MacBook Air   │ Minneapolis │           1 │              NULL │
+└───────────────┴─────────────┴─────────────┴───────────────────┘
+
+-- Query 7: Roll-up from semester to academic year to grand total
+-- OLAP behavior: roll-up. ROLLUP adds a subtotal row for each academic year
+-- and one grand total row at the bottom.
+SELECT COALESCE(d.academic_year, 'All years')  AS year_label,
+       COALESCE(d.semester, 'All semesters')    AS semester_label,
+       COUNT(*) AS total_loans
+FROM fact_loans f
+JOIN dim_date d ON f.date_key = d.date_key
+GROUP BY ROLLUP (d.academic_year, d.semester)
+ORDER BY GROUPING(d.academic_year), d.academic_year,
+         GROUPING(d.semester), MIN(d.full_date);
+┌────────────┬────────────────┬─────────────┐
+│ year_label │ semester_label │ total_loans │
+│  varchar   │    varchar     │    int64    │
+├────────────┼────────────────┼─────────────┤
+│ 2025-2026  │ Fall 2025      │           9 │
+│ 2025-2026  │ Spring 2026    │          11 │
+│ 2025-2026  │ Summer 2026    │           2 │
+│ 2025-2026  │ All semesters  │          22 │
+│ 2026-2027  │ Fall 2026      │          10 │
+│ 2026-2027  │ All semesters  │          10 │
+│ All years  │ All semesters  │          32 │
+└────────────┴────────────────┴─────────────┘
